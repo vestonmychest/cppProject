@@ -11,8 +11,10 @@
 #include "IPStack.h"
 #include "Countdown.h"
 #include "MQTTClient.h"
+#include <iostream>
 
 #define USE_MQTT
+
 
 #include <cstdio>
 #include "pico/stdlib.h"
@@ -26,17 +28,12 @@
 class StepperMotor {
 private:
     uint8_t in1, in2, in3, in4;
+    int position = 0;
 
-    // Reversed 8-step half-step sequence (for smoother motion)
+    // Correct 8-step half-step sequence
     const uint8_t step_sequence[8][4] = {
-        {1, 0, 0, 1},
-        {1, 0, 0, 0},
-        {1, 1, 0, 0},
-        {0, 1, 0, 0},
-        {0, 1, 1, 0},
-        {0, 0, 1, 0},
-        {0, 0, 1, 1},
-        {0, 0, 0, 1}
+        {1, 0, 0, 1}, {1, 0, 0, 0}, {1, 1, 0, 0}, {0, 1, 0, 0},
+        {0, 1, 1, 0}, {0, 0, 1, 0}, {0, 0, 1, 1}, {0, 0, 0, 1}
     };
 
 public:
@@ -50,16 +47,36 @@ public:
         gpio_init(in4); gpio_set_dir(in4, GPIO_OUT);
     }
 
-    void step(int steps, bool direction, int delay_ms = 1) {
+    void step(int steps, bool direction, int delay_ms = 0) {
+        printf("Starting motor movement: %d steps, direction: %s\n", steps, direction ? "FORWARD" : "REVERSE");
+
         for (int i = 0; i < steps; i++) {
-            int step_index = direction ? i % 8 : (7 - (i % 8)); // Forward or Reverse
-            gpio_put(in1, step_sequence[step_index][0]);
-            gpio_put(in2, step_sequence[step_index][1]);
-            gpio_put(in3, step_sequence[step_index][2]);
-            gpio_put(in4, step_sequence[step_index][3]);
+            position = (direction) ? (position + 1) % 8 : (position - 1 + 8) % 8;
+
+            gpio_put(in1, step_sequence[position][0]);
+            gpio_put(in2, step_sequence[position][1]);
+            gpio_put(in3, step_sequence[position][2]);
+            gpio_put(in4, step_sequence[position][3]);
+
+            printf("Step: %d, Position: %d\n", i, position);
+
             sleep_ms(delay_ms);
+
+            // if (i % 1024 == 0 && i > 0) {
+            //     printf("Cooling motor driver...\n");
+            //     sleep_ms(2000); // Allow driver to cool down
+            // }
         }
-        sleep_ms(1000); // Small pause to allow coils to reset
+
+        stop(); // Turn off all coils
+        printf("Motor movement complete!\n");
+    }
+
+    void stop() {
+        gpio_put(in1, 0);
+        gpio_put(in2, 0);
+        gpio_put(in3, 0);
+        gpio_put(in4, 0);
     }
 };
 
@@ -88,12 +105,13 @@ int main() {
     Button button(8);
     button.initialize();
 
+    bool direction = false;
     printf("\nBoot\n");
 
     while (true) {
         if (button.isPressed()) {
             printf("Button pressed - Moving stepper motor\n");
-            motor.step(2048, true);  // One full revolution in half-steps
+            motor.step(4096, direction);  // Move 2 full shaft rotations
             sleep_ms(500);
         }
     }
