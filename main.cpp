@@ -17,6 +17,8 @@
 
 
 #include <cstdio>
+#include <functional>
+
 #include "pico/stdlib.h"
 
 // Stepper motor control pins (ULN2003 driver)
@@ -62,10 +64,7 @@ public:
 
             sleep_ms(delay_ms);
 
-            // if (i % 1024 == 0 && i > 0) {
-            //     printf("Cooling motor driver...\n");
-            //     sleep_ms(2000); // Allow driver to cool down
-            // }
+
         }
 
         stop(); // Turn off all coils
@@ -98,21 +97,54 @@ public:
     }
 };
 
-int main() {
+
+class Limit_switch
+{
+    private:
+    uint8_t pin1;
+    bool state;
+
+    public:
+
+    Limit_switch(int pin1 ) : pin1(pin1) { initialize(); }
+
+
+    void initialize()
+    {
+        gpio_init(pin1);
+        gpio_set_dir(pin1, GPIO_IN);
+        gpio_pull_up(pin1);
+
+    }
+
+    bool getstate()
+    {
+       state=  gpio_get(pin1);
+        return state;
+    }
+
+
+};
+
+
+
+int main()
+{
     stdio_init_all();
     StepperMotor motor(IN1, IN2, IN3, IN4);
     motor.initialize();
     Button button(8);
     button.initialize();
+    Limit_switch limit_switch(4);
+
 
     bool direction = false;
     printf("\nBoot\n");
 
     while (true) {
-        if (button.isPressed()) {
-            printf("Button pressed - Moving stepper motor\n");
-            motor.step(4096, direction);  // Move 2 full shaft rotations
-            sleep_ms(500);
+        if (!limit_switch.getstate())
+        {
+            printf("Limit switch detected\n");
         }
     }
 }
