@@ -2,6 +2,7 @@
 #include <cstring>
 #include <cmath>
 #include "pico/stdlib.h"
+#include <functional>
 #include "pico/time.h"
 #include "hardware/timer.h"
 #include "uart/PicoUart.h"
@@ -12,27 +13,21 @@
 #include "Countdown.h"
 #include "MQTTClient.h"
 #include <iostream>
+#include <sys/unistd.h>
 
 #define USE_MQTT
 
-
-#include <cstdio>
-#include <functional>
-
-#include "pico/stdlib.h"
-
 // Stepper motor control pins (ULN2003 driver)
-#define IN1 2
-#define IN2 3
-#define IN3 6
-#define IN4 13
+#define IN1 13
+#define IN2 6
+#define IN3 3
+#define IN4 2
 
 class StepperMotor {
 private:
     uint8_t in1, in2, in3, in4;
     int position = 0;
 
-    // Correct 8-step half-step sequence
     const uint8_t step_sequence[8][4] = {
         {1, 0, 0, 1}, {1, 0, 0, 0}, {1, 1, 0, 0}, {0, 1, 0, 0},
         {0, 1, 1, 0}, {0, 0, 1, 0}, {0, 0, 1, 1}, {0, 0, 0, 1}
@@ -43,48 +38,52 @@ public:
         : in1(in1), in2(in2), in3(in3), in4(in4) {}
 
     void initialize() {
-        gpio_init(in1); gpio_set_dir(in1, GPIO_OUT);
-        gpio_init(in2); gpio_set_dir(in2, GPIO_OUT);
-        gpio_init(in3); gpio_set_dir(in3, GPIO_OUT);
-        gpio_init(in4); gpio_set_dir(in4, GPIO_OUT);
+        gpio_init(in1);
+        gpio_set_dir(in1, GPIO_OUT);
+        gpio_init(in2);
+        gpio_set_dir(in2, GPIO_OUT);
+        gpio_init(in3);
+        gpio_set_dir(in3, GPIO_OUT);
+        gpio_init(in4);
+        gpio_set_dir(in4, GPIO_OUT);
     }
 
-    void step(int steps, bool direction, int delay_ms = 0) {
-        printf("Starting motor movement: %d steps, direction: %s\n", steps, direction ? "FORWARD" : "REVERSE");
+    void move(bool &direction, int delay_ms, std::function<bool()> stopCondition) {
+        printf("Starting motor movement with direction control\n");
 
-        for (int i = 0; i < steps; i++) {
+        while (true) {
+            if (stopCondition()) {
+                direction = !direction; // Reverse direction immediately
+                printf("Limit switch activated! Reversing direction.\n");
+
+                // Move away from the switch before checking again
+                for (int i = 0; i < 100; i++) {
+                    position = (direction) ? (position + 1) % 8 : (position - 1 + 8) % 8;
+                    gpio_put(in1, step_sequence[position][0]);
+                    gpio_put(in2, step_sequence[position][1]);
+                    gpio_put(in3, step_sequence[position][2]);
+                    gpio_put(in4, step_sequence[position][3]);
+                    sleep_ms(delay_ms);
+                }
+            }
+
             position = (direction) ? (position + 1) % 8 : (position - 1 + 8) % 8;
-
             gpio_put(in1, step_sequence[position][0]);
             gpio_put(in2, step_sequence[position][1]);
             gpio_put(in3, step_sequence[position][2]);
             gpio_put(in4, step_sequence[position][3]);
 
-            printf("Step: %d, Position: %d\n", i, position);
-
             sleep_ms(delay_ms);
-
-
         }
-
-        stop(); // Turn off all coils
-        printf("Motor movement complete!\n");
-    }
-
-    void stop() {
-        gpio_put(in1, 0);
-        gpio_put(in2, 0);
-        gpio_put(in3, 0);
-        gpio_put(in4, 0);
     }
 };
 
-class Button {
+class LimitSwitch {
 private:
     uint8_t pin;
 
 public:
-    Button(uint8_t pin) : pin(pin) {}
+    LimitSwitch(uint8_t pin) : pin(pin) {}
 
     void initialize() {
         gpio_init(pin);
@@ -92,59 +91,24 @@ public:
         gpio_pull_up(pin);
     }
 
-    bool isPressed() {
+    bool isTriggered() {
         return gpio_get(pin) == 0;
     }
 };
 
-
-class Limit_switch
-{
-    private:
-    uint8_t pin1;
-    bool state;
-
-    public:
-
-    Limit_switch(int pin1 ) : pin1(pin1) { initialize(); }
-
-
-    void initialize()
-    {
-        gpio_init(pin1);
-        gpio_set_dir(pin1, GPIO_IN);
-        gpio_pull_up(pin1);
-
-    }
-
-    bool getstate()
-    {
-       state=  gpio_get(pin1);
-        return state;
-    }
-
-
-};
-
-
-
-int main()
-{
+int main() {
     stdio_init_all();
     StepperMotor motor(IN1, IN2, IN3, IN4);
     motor.initialize();
-    Button button(8);
-    button.initialize();
-    Limit_switch limit_switch(4);
+    LimitSwitch limitSwitch1(4);
+    LimitSwitch limitSwitch2(5);
+    limitSwitch1.initialize();
+    limitSwitch2.initialize();
 
-
-    bool direction = false;
+    bool direction = true;
     printf("\nBoot\n");
 
-    while (true) {
-        if (!limit_switch.getstate())
-        {
-            printf("Limit switch detected\n");
-        }
-    }
+    motor.move(direction, 5, [&]() { return limitSwitch1.isTriggered() || limitSwitch2.isTriggered(); });
+
+    return 0;
 }
