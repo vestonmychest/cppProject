@@ -18,10 +18,10 @@
 #define USE_MQTT
 
 // Stepper motor control pins (ULN2003 driver)
-#define IN1 13
-#define IN2 6
-#define IN3 3
-#define IN4 2
+#define IN1 2
+#define IN2 3
+#define IN3 6
+#define IN4 13
 
 class StepperMotor {
 private:
@@ -35,7 +35,7 @@ private:
 
 public:
     StepperMotor(uint8_t in1, uint8_t in2, uint8_t in3, uint8_t in4)
-        : in1(in1), in2(in2), in3(in3), in4(in4) {}
+        : in1(in1), in2(in2), in3(in3), in4(in4) {initialize();}
 
     void initialize() {
         gpio_init(in1);
@@ -83,7 +83,7 @@ private:
     uint8_t pin;
 
 public:
-    LimitSwitch(uint8_t pin) : pin(pin) {}
+    LimitSwitch(uint8_t pin) : pin(pin) {initialize();}
 
     void initialize() {
         gpio_init(pin);
@@ -96,19 +96,39 @@ public:
     }
 };
 
+class Button {
+private:
+    uint8_t pin;
+
+public:
+    Button(uint8_t pin) : pin(pin) {initialize();}
+
+    void initialize() {
+        gpio_init(pin);
+        gpio_set_dir(pin, GPIO_IN);
+        gpio_pull_up(pin);
+    }
+
+    bool isPressed() {
+        return gpio_get(pin) == 0;
+    }
+};
+
 int main() {
     stdio_init_all();
     StepperMotor motor(IN1, IN2, IN3, IN4);
-    motor.initialize();
+    Button button(8);
     LimitSwitch limitSwitch1(4);
     LimitSwitch limitSwitch2(5);
-    limitSwitch1.initialize();
-    limitSwitch2.initialize();
 
     bool direction = true;
     printf("\nBoot\n");
 
-    motor.move(direction, 5, [&]() { return limitSwitch1.isTriggered() || limitSwitch2.isTriggered(); });
+    while (true) {
+        if (button.isPressed()) {
+            motor.move(direction, 5, [&]() { return limitSwitch1.isTriggered() || limitSwitch2.isTriggered(); });
+        }
+    }
 
     return 0;
 }
