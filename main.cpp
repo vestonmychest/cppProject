@@ -18,10 +18,10 @@
 #define USE_MQTT
 
 // Stepper motor control pins (ULN2003 driver)
-#define IN1 2
-#define IN2 3
-#define IN3 6
-#define IN4 13
+#define IN1 13
+#define IN2 6
+#define IN3 3
+#define IN4 2
 
 class StepperMotor {
 private:
@@ -121,12 +121,13 @@ int main() {
     LimitSwitch limitSwitch1(4);
     LimitSwitch limitSwitch2(5);
 
-    bool direction = true;
+    bool direction = false;
     printf("\nBoot\n");
 
     while (true) {
         if (button.isPressed()) {
-            motor.move(direction, 5, [&]() { return limitSwitch1.isTriggered() || limitSwitch2.isTriggered(); });
+            motor.move(direction, 1,  [&]()
+                { return limitSwitch1.isTriggered() || limitSwitch2.isTriggered(); });
         }
     }
 
