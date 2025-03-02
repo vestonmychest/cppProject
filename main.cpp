@@ -168,18 +168,17 @@ public:
 
         // Ensimmäinen reun
 
-        while (true) {
+        while (!switch1.isTriggered() && !switch2.isTriggered()) {
             step(direction);
             sleep_ms(delay_ms);
-
-            if (switch1.isTriggered()) {
-                first_triggered = &switch1; // Tallennetaan kumpi kytkin aktivoitui
-                break;
-            } else if (switch2.isTriggered()) {
-                first_triggered = &switch2;
-                break;
-            }
         }
+
+        if (switch1.isTriggered()) {
+            first_triggered = &switch1;
+        } else if (switch2.isTriggered()) {
+            first_triggered = &switch2;
+        }
+
 
 
 
