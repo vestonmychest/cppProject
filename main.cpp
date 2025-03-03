@@ -179,9 +179,10 @@ public:
             if (stopButton.isPressed()) {
                 stop();
                 printf("Movement interrupted by button press!\n");
-                return; // Poistutaan funktiosta heti
+                return; // Poistutaan funktiosta
             }
         }
+
         // Jos liike on valmis, päivitetään tila
         if (state == DoorState::OPENING) {
             state = DoorState::OPEN;
@@ -190,6 +191,7 @@ public:
             state = DoorState::CLOSED;
             printf("Door closed!\n");
         }
+        steps_moved = 0;
     }
 
     void move_back()
@@ -258,12 +260,12 @@ public:
             sleep_ms(delay_ms);
 
             if ((first_triggered == &switch1 && switch2.isTriggered()) || (first_triggered == &switch2 && switch1.isTriggered())) {
-                step_count -= 50;
+                step_count -= 200;
                 break;
                 }
         }
         // Tallennetaan askelmäärä
-        total_steps = step_count- 400; // miinustetaan jotta ei osu seinään uudestaan
+        total_steps = step_count; // miinustetaan jotta ei osu seinään uudestaan
         calibrated = true;
         std:: cout << "Total steps: " << total_steps << std::endl;
 
@@ -289,8 +291,6 @@ public:
 
         while (true)
         {
-
-
             if (button2.isPressed() && button3.isPressed()) {
                 motor.calibrate(1, limitSwitch1, limitSwitch2);
                 std::cout << "Motor calibrated" << std::endl;
@@ -305,16 +305,17 @@ public:
                     motor.startClosing();
                 } else if (currentState == DoorState::OPENING || currentState == DoorState::CLOSING) {
                     motor.stop();  // Pysäytä moottori jos se liikkuu
+                }else if (currentState == DoorState::STOPPED) {
+                    motor.move_back();
+
                 }
 
+
+                // Jos moottori on liikkeessä, liikutetaan sitä askel kerrallaan
+                if (motor.getState() == DoorState::OPENING || motor.getState() == DoorState::CLOSING) {
+                    motor.move(button1);
+                }
             }
 
-
-            // Jos moottori on liikkeessä, liikutetaan sitä askel kerrallaan
-            if (motor.getState() == DoorState::OPENING || motor.getState() == DoorState::CLOSING) {
-                motor.move(button1);
-            }else if (motor.getState() == DoorState::STOPPED) {
-                motor.move_back();
-            }
         }
     }
