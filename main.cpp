@@ -225,6 +225,7 @@ public:
     void calibrate(int delay_ms, LimitSwitch &switch1, LimitSwitch &switch2) {
         int step_count = 0;
         total_steps = 0;
+        steps_moved = 0;
         LimitSwitch *first_triggered = nullptr;
 
 
