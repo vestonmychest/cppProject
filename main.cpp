@@ -1,3 +1,4 @@
+
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -29,6 +30,7 @@ class Button {
 private:
     uint8_t pin;
     bool lastState = true; // Oletetaan, että nappi on ylös vedettynä alussa
+    bool pressed = false; //track if button was pressed
 
 public:
     Button(uint8_t pin) : pin(pin) { initialize(); }
@@ -40,18 +42,23 @@ public:
     }
 
     bool isPressed() {
-        bool currentState = gpio_get(pin) == 0;
-        if (currentState && !lastState) { // Painettiin juuri alas
-            lastState = currentState;
+        bool currentState = gpio_get(pin) == 0; //low = pressed
+
+        if (!currentState && pressed) {
+            // Painettiin juuri alas
+            pressed = false;
             return true;
         }
-        lastState = currentState;
-        return false;
+
+        if (currentState) {
+            pressed = true;
+        }
+
+        return false; //no new press detected
     }
 };
 
-class LimitSwitch
-{
+class LimitSwitch {
 private:
     uint8_t pin;
     bool triggered = false;
@@ -61,7 +68,8 @@ private:
     static void gpio_irq_handler(uint gpio, uint32_t events) {
         busy_wait_ms(100);
 
-        if (instance1 && gpio == instance1->pin) { // varmistetaan onko nullptr ja gpio pin
+        if (instance1 && gpio == instance1->pin) {
+            // varmistetaan onko nullptr ja gpio pin
             instance1->triggered = true;
             printf("Limit switch 1 (pin %d) triggered!\n", gpio);
         }
@@ -72,11 +80,9 @@ private:
     }
 
 public:
+    LimitSwitch(uint8_t pin) : pin(pin) { initialize(); }
 
-    LimitSwitch(uint8_t pin) : pin(pin) {initialize();}
-
-    void initialize()
-    {
+    void initialize() {
         gpio_init(pin);
         gpio_set_dir(pin, GPIO_IN);
         gpio_pull_up(pin);
@@ -84,8 +90,7 @@ public:
 
         if (!instance1) {
             instance1 = this;
-        } else if (!instance2)
-        {
+        } else if (!instance2) {
             instance2 = this;
         }
 
@@ -93,26 +98,23 @@ public:
     }
 
 
-        bool isTriggered() {
-            return triggered;
-        }
+    bool isTriggered() {
+        return triggered;
+    }
 
-        void resetTrigger() {
-            triggered = false;
-        }
-
-
-
+    void resetTrigger() {
+        triggered = false;
+    }
 };
-LimitSwitch* LimitSwitch::instance1 = nullptr; // asetetaan nullptr
-LimitSwitch* LimitSwitch::instance2 = nullptr;
+
+LimitSwitch *LimitSwitch::instance1 = nullptr; // asetetaan nullptr
+LimitSwitch *LimitSwitch::instance2 = nullptr;
 
 
 enum class DoorState { CLOSED, OPEN, STOPPED, OPENING, CLOSING };
 
 
-class StepperMotor
-{
+class StepperMotor {
 private:
     uint8_t in1, in2, in3, in4;
     int position = 0;
@@ -130,7 +132,7 @@ private:
 
 public:
     StepperMotor(uint8_t in1, uint8_t in2, uint8_t in3, uint8_t in4)
-        : in1(in1), in2(in2), in3(in3), in4(in4) {initialize();}
+        : in1(in1), in2(in2), in3(in3), in4(in4) { initialize(); }
 
     void initialize() {
         gpio_init(in1);
@@ -169,11 +171,11 @@ public:
         }
     }
 
-    void move(Button& stopButton) {
+    void move(Button &stopButton) {
         for (int i = 0; i < total_steps; i++) {
             step(direction);
             sleep_ms(1);
-            steps_moved++;  // Lasketaan liikutut askeleet
+            steps_moved++; // Lasketaan liikutut askeleet
 
             // Jos nappia painetaan, pysäytetään moottori
             if (stopButton.isPressed()) {
@@ -194,19 +196,15 @@ public:
         steps_moved = 0;
     }
 
-    void move_back()
-    {
-        for (int i = 0; i < steps_moved ; i++)
-        {
+    void move_back() {
+        for (int i = 0; i < steps_moved; i++) {
             step(!direction);
             sleep_ms(1);
         }
         steps_moved = 0;
-        if (previous_state == DoorState::CLOSING)
-        {
+        if (previous_state == DoorState::CLOSING) {
             state = DoorState::OPEN;
-        }else if (previous_state == DoorState::OPENING)
-        {
+        } else if (previous_state == DoorState::OPENING) {
             state = DoorState::CLOSED;
         }
     }
@@ -224,9 +222,9 @@ public:
         gpio_put(in4, step_sequence[position][3]);
     }
 
-    void calibrate(int delay_ms, LimitSwitch& switch1, LimitSwitch& switch2) {
+    void calibrate(int delay_ms, LimitSwitch &switch1, LimitSwitch &switch2) {
         int step_count = 0;
-        LimitSwitch* first_triggered = nullptr;
+        LimitSwitch *first_triggered = nullptr;
 
 
         // Nollataan kytkimet ennen kalibroinnin aloitusta
@@ -254,68 +252,80 @@ public:
         // Käännetään suuntaa ja siirrytään toiseen reunaan
         direction = !direction;
 
-        while (true) { // seurataan vain toista kytkintä
+        while (true) {
+            // seurataan vain toista kytkintä
             step(direction);
             step_count++;
             sleep_ms(delay_ms);
 
-            if ((first_triggered == &switch1 && switch2.isTriggered()) || (first_triggered == &switch2 && switch1.isTriggered())) {
+            if ((first_triggered == &switch1 && switch2.isTriggered()) || (
+                    first_triggered == &switch2 && switch1.isTriggered())) {
                 step_count -= 200;
                 break;
-                }
+            }
         }
         // Tallennetaan askelmäärä
         total_steps = step_count; // miinustetaan jotta ei osu seinään uudestaan
         calibrated = true;
-        std:: cout << "Total steps: " << total_steps << std::endl;
-
-
+        std::cout << "Total steps: " << total_steps << std::endl;
     }
 };
 
 
-
-    int main()
-    {
-        stdio_init_all();
-        StepperMotor motor(IN1, IN2, IN3, IN4);
-        Button button1(8); //sw1
-        Button button2(9); // sw0
-        Button button3(7); // sw2
-        LimitSwitch limitSwitch1(4);
-        LimitSwitch limitSwitch2(5);
+int main() {
+    stdio_init_all();
+    StepperMotor motor(IN1, IN2, IN3, IN4);
+    Button button1(8); //sw1
+    Button button2(9); // sw0
+    Button button3(7); // sw2
+    LimitSwitch limitSwitch1(4);
+    LimitSwitch limitSwitch2(5);
 
 
-        printf("\nBoot\n");
+    printf("\nBoot\n");
+
+    uint32_t button2PressTime = 0; //uint to save time that went by after pressing button2
+    uint32_t button3PressTime = 0; //uint to save time that went by after pressing button3
+
+    while (true) {
+
+        if (button2.isPressed()) { //check if button2 is pressed
+            button2PressTime = to_ms_since_boot(get_absolute_time()); //if button2 is pressed then save the time
+        }                                                               // that has gone AFTER release of the button2
+
+        if (button3.isPressed()) { //check if button3 is pressed
+            button3PressTime = to_ms_since_boot(get_absolute_time()); //if button3 is pressed then save the time
+        }                                                               // that has gone AFTER release of the button3
 
 
-        while (true)
-        {
-            if (button2.isPressed() && button3.isPressed()) {
-                motor.calibrate(1, limitSwitch1, limitSwitch2);
-                std::cout << "Motor calibrated" << std::endl;
+        // Check if both buttons were pressed within 500ms of each other
+        if (button2PressTime > 0 && button3PressTime > 0 && abs((int)(button2PressTime - button3PressTime)) <= 500) {
+
+            motor.calibrate(1, limitSwitch1, limitSwitch2); //calibrate motor
+            std::cout << "Motor calibrated" << std::endl;
+
+            //reset timestamps
+            button2PressTime = 0;
+            button3PressTime = 0;
+        }
+
+        if (button1.isPressed()) {
+            DoorState currentState = motor.getState();
+            if (currentState == DoorState::CLOSED) {
+                motor.startOpening();
+            } else if (currentState == DoorState::OPEN) {
+                motor.startClosing();
+            } else if (currentState == DoorState::OPENING || currentState == DoorState::CLOSING) {
+                motor.stop(); // Pysäytä moottori jos se liikkuu
+            } else if (currentState == DoorState::STOPPED) {
+                motor.move_back();
             }
 
-            if (button1.isPressed()) {
 
-                DoorState currentState = motor.getState();
-                if (currentState == DoorState::CLOSED) {
-                    motor.startOpening();
-                } else if (currentState == DoorState::OPEN) {
-                    motor.startClosing();
-                } else if (currentState == DoorState::OPENING || currentState == DoorState::CLOSING) {
-                    motor.stop();  // Pysäytä moottori jos se liikkuu
-                }else if (currentState == DoorState::STOPPED) {
-                    motor.move_back();
-
-                }
-
-
-                // Jos moottori on liikkeessä, liikutetaan sitä askel kerrallaan
-                if (motor.getState() == DoorState::OPENING || motor.getState() == DoorState::CLOSING) {
-                    motor.move(button1);
-                }
+            // Jos moottori on liikkeessä, liikutetaan sitä askel kerrallaan
+            if (motor.getState() == DoorState::OPENING || motor.getState() == DoorState::CLOSING) {
+                motor.move(button1);
             }
-
         }
     }
+}
