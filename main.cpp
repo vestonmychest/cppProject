@@ -24,6 +24,11 @@
 #define IN2 6
 #define IN3 3
 #define IN4 2
+//EEPROM const addresses
+#define EEPROM_ADDRESS 0x50
+#define EEPROM_DIRECTION_ADDR 0x7FF0
+#define EEPROM_STEPS_ADDR 0x7FF2
+#define EEPROM_CALIBRATION_ADDR 0x7FF4
 
 
 class Button {
@@ -71,11 +76,11 @@ private:
         if (instance1 && gpio == instance1->pin) {
             // varmistetaan onko nullptr ja gpio pin
             instance1->triggered = true;
-            printf("Limit switch 1 (pin %d) triggered!\n", gpio);
+            // printf("Limit switch 1 (pin %d) triggered!\n", gpio);
         }
         if (instance2 && gpio == instance2->pin) {
             instance2->triggered = true;
-            printf("Limit switch 2 (pin %d) triggered!\n", gpio);
+            // printf("Limit switch 2 (pin %d) triggered!\n", gpio);
         }
     }
 
@@ -122,7 +127,6 @@ private:
     DoorState previous_state = DoorState::CLOSED;
     int total_steps = 0;
     int steps_moved = 0;
-    bool calibrated = false;
     bool direction = true;
 
     const uint8_t step_sequence[8][4] = {
@@ -133,6 +137,8 @@ private:
 public:
     StepperMotor(uint8_t in1, uint8_t in2, uint8_t in3, uint8_t in4)
         : in1(in1), in2(in2), in3(in3), in4(in4) { initialize(); }
+
+    bool calibrated = false;
 
     void initialize() {
         gpio_init(in1);
@@ -262,7 +268,7 @@ public:
 
             if ((first_triggered == &switch1 && switch2.isTriggered()) || (
                     first_triggered == &switch2 && switch1.isTriggered())) {
-                step_count -= 200;
+                // step_count -= 200;
                 break;
             }
         }
@@ -290,7 +296,6 @@ int main() {
     uint32_t button3PressTime = 0; //uint to save time that went by after pressing button3
 
     while (true) {
-
         if (button2.isPressed()) { //check if button2 is pressed
             button2PressTime = to_ms_since_boot(get_absolute_time()); //if button2 is pressed then save the time
         }                                                               // that has gone AFTER release of the button2
@@ -304,15 +309,15 @@ int main() {
         if (button2PressTime > 0 && button3PressTime > 0 && abs((int)(button2PressTime - button3PressTime)) <= 500) {
 
             motor.calibrate(1, limitSwitch1, limitSwitch2); //calibrate motor
-            std::cout << "Motor calibrated" << std::endl;
+            std::cout << "Motor calibrated\n" << std::endl;
 
             //reset timestamps
             button2PressTime = 0;
             button3PressTime = 0;
         }
 
-        if (button1.isPressed()) {
-            DoorState currentState = motor.getState();
+        if (button1.isPressed() && motor.calibrated) { //move the door only if the motor
+            DoorState currentState = motor.getState(); // has been calibrated
             if (currentState == DoorState::CLOSED) {
                 motor.startOpening();
             } else if (currentState == DoorState::OPEN) {
