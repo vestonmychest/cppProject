@@ -1,4 +1,3 @@
-
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -15,20 +14,94 @@
 #include "MQTTClient.h"
 #include <iostream>
 #include <sys/unistd.h>
+#include "hardware/i2c.h"
 
 
 #define USE_MQTT
-
 // Stepper motor control pins (ULN2003 driver)
 #define IN1 13
 #define IN2 6
 #define IN3 3
 #define IN4 2
-//EEPROM const addresses
+//EEPROM addresses
 #define EEPROM_ADDRESS 0x50
-#define EEPROM_DIRECTION_ADDR 0x7FF0
-#define EEPROM_STEPS_ADDR 0x7FF2
-#define EEPROM_CALIBRATION_ADDR 0x7FF4
+#define EEPROM_DIRECTION_ADDR  0x7FF0  // 1-byte;
+#define EEPROM_STEPS_ADDR      0x7FF4  // 4-byte; total_steps is 4 byte int
+#define EEPROM_CALIBRATION_ADDR 0x7FF8 // 1-byte; 1 = calibrated; 0 = not calibrated
+//I2C pins
+#define I2C_PORT i2c0
+#define SDA_PIN 16
+#define SCL_PIN 17
+
+
+class EEPROM {
+public:
+    EEPROM(){ initialize(); }
+
+    void initialize(){
+        i2c_init(I2C_PORT, 100 * 1000); //Initialize the I2C port (i2c0) with a clock speed of 100 kHz.
+        gpio_set_function(SDA_PIN, GPIO_FUNC_I2C);
+        gpio_set_function(SCL_PIN, GPIO_FUNC_I2C);
+        gpio_pull_up(SDA_PIN);
+        gpio_pull_up(SCL_PIN);
+
+        // Check if the EEPROM is responding
+        uint8_t test_byte = 0;
+        int ret = i2c_read_blocking(I2C_PORT, EEPROM_ADDRESS, &test_byte, 1, false); //read 1 byte from the EEPROM to verify that it is connected
+        if (ret == PICO_ERROR_GENERIC) {
+            printf("EEPROM NOT FOUND! Check wiring and address.\n"); //read fails. check wiring i guess?
+        } else {
+            printf("EEPROM detected successfully.\n"); //read is OK
+        }
+    }
+
+
+    static bool write(uint16_t mem_address, uint8_t *data, size_t length) { //write data to EEPROM
+        //mem_address =  The memory address in the EEPROM where the data will be written
+        //data = a pointer to the data to be written
+        //length = the number of bytes to write
+        uint8_t buffer[2 + length]; //hold mem_add and data; 2 first are mem_add; rest data
+        buffer[0] = (mem_address >> 8) & 0xFF; //stores the high byte of the memory address
+        buffer[1] = mem_address & 0xFF; //Stores the low byte of the memory address
+        memcpy(&buffer[2], data, length); // Copies the data into the buffer after the address bytes
+        int ret = i2c_write_blocking(I2C_PORT, EEPROM_ADDRESS, buffer, 2 + length, false); //write the buffer into EEPROM; returns number of bytes written
+        sleep_ms(5);
+        return ret == (2 + length); // Returns true if the write was successful
+    }
+
+    static bool read(uint16_t mem_address, uint8_t *data, size_t length) { //read data from EEPROM
+        //mem_address =  The memory address in the EEPROM to read from
+        //data = A pointer to the buffer where the read data will be stored
+        //length = the number of bytes to read
+        uint8_t addr_buffer[2] = { static_cast<uint8_t>(mem_address >> 8), static_cast<uint8_t>(mem_address & 0xFF) }; //A buffer to hold the memory address
+
+        printf("EEPROM Read: Requesting data from address 0x%X\n", mem_address);
+
+        int write_status = i2c_write_blocking(I2C_PORT, EEPROM_ADDRESS, addr_buffer, 2, true); //Writes the memory address to the EEPROM to set the read pointer; true = not send a stop condition
+        printf("EEPROM Read: Writing data to address 0x%X\n", mem_address);
+        if (!write_status) {
+            printf("EEPROM Read: Failed to write data to address 0x%X\n", mem_address);
+        }
+        if (write_status != 2) { //if write fails return false
+            printf("EEPROM write (read request) failed at address: 0x%X, Status: %d\n", mem_address, write_status);
+            return false;
+        }
+
+        printf("EEPROM Read: Request successful, reading data...\n");
+
+        int read_status = i2c_read_blocking(I2C_PORT, EEPROM_ADDRESS, data, length, false); //read lenght-amount bytes from EEPROM to data; false = stop after the read
+        if (read_status != length) { //if read fails return false
+            printf("EEPROM read failed at address: 0x%X, Expected: %d, Got: %d\n",
+                   mem_address, length, read_status);
+            return false;
+        }
+
+        printf("EEPROM Read: Data successfully read from 0x%X\n", mem_address);
+        return true;
+    }
+
+
+};
 
 
 class Button {
@@ -76,11 +149,11 @@ private:
         if (instance1 && gpio == instance1->pin) {
             // varmistetaan onko nullptr ja gpio pin
             instance1->triggered = true;
-            // printf("Limit switch 1 (pin %d) triggered!\n", gpio);
+            printf("Limit switch 1 (pin %d) triggered!\n", gpio);
         }
         if (instance2 && gpio == instance2->pin) {
             instance2->triggered = true;
-            // printf("Limit switch 2 (pin %d) triggered!\n", gpio);
+            printf("Limit switch 2 (pin %d) triggered!\n", gpio);
         }
     }
 
@@ -136,7 +209,9 @@ private:
 
 public:
     StepperMotor(uint8_t in1, uint8_t in2, uint8_t in3, uint8_t in4)
-        : in1(in1), in2(in2), in3(in3), in4(in4) { initialize(); }
+        : in1(in1), in2(in2), in3(in3), in4(in4) {
+        initialize();
+    }
 
     bool calibrated = false;
 
@@ -149,6 +224,36 @@ public:
         gpio_set_dir(in3, GPIO_OUT);
         gpio_init(in4);
         gpio_set_dir(in4, GPIO_OUT);
+    }
+
+    void saveDirectionToEEPROM() { //save direction
+        // Write direction to EEPROM
+        bool write_success = EEPROM::write(EEPROM_DIRECTION_ADDR, (uint8_t*)&direction, sizeof(direction));
+
+        if (write_success) {
+            printf("Successfully saved direction %d to EEPROM address 0x%04X\n", direction, EEPROM_DIRECTION_ADDR);
+        } else {
+            printf("Failed to save direction %d to EEPROM address 0x%04X\n", direction, EEPROM_DIRECTION_ADDR);
+        }
+    }
+
+    bool loadDirectionFromEEPROM() { //load only dir from EEPROM
+        bool eeprom_direction; //boolean for dir
+        //Reads the motor's direction from the EEPROM at address 0x7FF0
+        //The data is stored in the read_dir variable
+        //The success flag is updated to false if the read operation fails
+        bool success = EEPROM::read(EEPROM_DIRECTION_ADDR, (uint8_t*)&eeprom_direction, sizeof(eeprom_direction));
+
+        if (success) {
+            // If EEPROM contains valid data, flip the direction
+            direction = !eeprom_direction;
+            printf("Loaded direction from EEPROM: %d. Flipped to: %d\n", eeprom_direction, direction);
+            return direction;
+        } else {
+            // If EEPROM read fails, use the default direction
+            printf("Failed to load direction from EEPROM. Using default direction: %d\n", direction);
+            return direction;
+        }
     }
 
     void startOpening() {
@@ -177,7 +282,7 @@ public:
         }
     }
 
-    void move(Button &stopButton) {
+    void move(Button &stopButton){
         for (int i = 0; i < total_steps; i++) {
             step(direction);
             sleep_ms(1);
@@ -187,6 +292,7 @@ public:
             if (stopButton.isPressed()) {
                 stop();
                 printf("Movement interrupted by button press!\n");
+                saveDirectionToEEPROM();
                 return; // Poistutaan funktiosta
             }
         }
@@ -200,6 +306,7 @@ public:
             printf("Door closed!\n");
         }
         steps_moved = 0;
+        saveDirectionToEEPROM();
     }
 
     void move_back() {
@@ -210,9 +317,12 @@ public:
         steps_moved = 0;
         if (previous_state == DoorState::CLOSING) {
             state = DoorState::OPEN;
+            direction = true;
         } else if (previous_state == DoorState::OPENING) {
             state = DoorState::CLOSED;
+            direction = false;
         }
+        saveDirectionToEEPROM();
     }
 
     DoorState getState() const {
@@ -236,6 +346,11 @@ public:
 
 
         // Nollataan kytkimet ennen kalibroinnin aloitusta
+        switch1.resetTrigger();
+        switch2.resetTrigger();
+
+        direction = loadDirectionFromEEPROM(); //flip direction so it doesn't hit the wall
+
         switch1.resetTrigger();
         switch2.resetTrigger();
 
@@ -276,7 +391,104 @@ public:
         total_steps = step_count; // miinustetaan jotta ei osu seinään uudestaan
         calibrated = true;
         std::cout << "Total steps: " << total_steps << std::endl;
+        saveToEEPROM();
     }
+
+    void saveToEEPROM() { //save motor's dir, calib and total steps to EEPROM
+        // Write direction; calls write method
+        if (!EEPROM::write(EEPROM_DIRECTION_ADDR, (uint8_t*)&direction, sizeof(direction))) {
+            printf("Failed to write direction to EEPROM!\n");
+        }
+        sleep_ms(10); // Add delay between writes
+
+        // Write total steps; calls write method
+        if (!EEPROM::write(EEPROM_STEPS_ADDR, (uint8_t*)&total_steps, sizeof(total_steps))) {
+            printf("Failed to write total steps to EEPROM!\n");
+        }
+        sleep_ms(10); // Add delay between writes
+
+        // Write calibration status; calls write method
+        if (!EEPROM::write(EEPROM_CALIBRATION_ADDR, (uint8_t*)&calibrated, sizeof(calibrated))) {
+            printf("Failed to write calibration status to EEPROM!\n");
+        }
+        sleep_ms(10); // Add delay between writes
+
+        // Read back and verify; calls read method
+        bool dir;
+        int steps;
+        bool calib;
+        EEPROM::read(EEPROM_DIRECTION_ADDR, (uint8_t*)&dir, sizeof(dir));
+        EEPROM::read(EEPROM_STEPS_ADDR, (uint8_t*)&steps, sizeof(steps));
+        EEPROM::read(EEPROM_CALIBRATION_ADDR, (uint8_t*)&calib, sizeof(calib));
+
+        printf("\nSaved to EEPROM - Steps: %d, Direction: %d, Calibrated: %d\n", steps, dir, calib);
+    }
+
+    void loadFromEEPROM() { //load dir, calib and total steps from EEPROM
+        printf("Loading EEPROM from EEPROM...\n");
+        bool success = true; // A boolean flag to track if read is OK
+        int read_steps; //store total steps read from EEPROM
+        bool read_dir, read_calib; //booleans to store dir and calib read from EEPROM
+
+        //Reads the motor's direction from the EEPROM at address 0x7FF0
+        //The data is stored in the read_dir variable
+        //The success flag is updated to false if the read operation fails
+        success &= EEPROM::read(EEPROM_DIRECTION_ADDR, (uint8_t*)&read_dir, sizeof(read_dir));
+        printf("Reading direction from EEPROM...\n");
+
+        //Reads the total steps from the EEPROM at address 0x7FF4
+        //The data is stored in the read_steps variable
+        //The success flag is updated to false if the read operation fails
+        success &= EEPROM::read(EEPROM_STEPS_ADDR, (uint8_t*)&read_steps, sizeof(read_steps));
+        printf("Reading steps from EEPROM...\n");
+
+        //Reads the calibration status from the EEPROM at address 0x7FF8
+        //The data is stored in the read_calib variable
+        //The success flag is updated to false if the read operation fails
+        success &= EEPROM::read(EEPROM_CALIBRATION_ADDR, (uint8_t*)&read_calib, sizeof(read_calib));
+        printf("Reading calibration from EEPROM...\n");
+
+        printf("\nRaw EEPROM Data -> Steps: %d, Direction: %d, Calibrated: %d\n",
+               read_steps, read_dir, read_calib);
+
+        if (!success) { //check if any of the read operations failed; reset to default values if fail
+            printf("EEPROM read failed! Resetting to defaults.\n");
+            direction = true;
+            total_steps = 0;
+            calibrated = false;
+            return;
+        }
+
+        // Validate amount of steps
+        if (read_steps < 0 || read_steps > 100000) { //there was an issue with the steps amount from EEPROM
+                                                     //so added this for debug purposes
+            printf("Invalid EEPROM total_steps! Resetting.\n");
+            total_steps = 0; //total steps to 0 if fail validation
+            calibrated = false; // not calibrated if fail validation
+        } else {
+            total_steps = read_steps; //If the data is valid, assign read_steps to total_steps
+        }
+
+        if (read_calib != 0 && read_calib != 1) { // Checks if the calibration status is neither 0 nor 1
+            printf("Invalid EEPROM calibration flag! Resetting.\n");
+            calibrated = false; // not calibrated if fail validation
+        } else {
+            calibrated = read_calib; //assign read_calib to calibrated if validation OK
+        }
+
+        if (read_dir != 0 && read_dir != 1) { //Checks if the direction is neither 0 nor 1
+            printf("Invalid EEPROM direction flag! Resetting.\n");
+            direction = true; //dir to default (true) if fail
+        } else {
+            direction = read_dir; //if valid, assign read_dir to direction
+        }
+
+        printf("Loaded from EEPROM -> Steps: %d, Direction: %d, Calibrated: %d\n",
+               total_steps, direction, calibrated);
+    }
+
+    //getter function; returns the current calibration status of the stepper motor
+    bool isCalibrated() { return calibrated; }
 };
 
 
@@ -288,9 +500,20 @@ int main() {
     Button button3(7); // sw2
     LimitSwitch limitSwitch1(4);
     LimitSwitch limitSwitch2(5);
+    EEPROM eeprom;
+    eeprom.initialize();
 
 
     printf("\nBoot\n");
+
+    // Load calibration data from EEPROM
+    motor.loadFromEEPROM();
+
+    if (motor.isCalibrated()) {
+        printf("Motor is calibrated. ");
+    } else {
+        printf("Motor is not calibrated. Please calibrate.\n");
+    }
 
     uint32_t button2PressTime = 0; //uint to save time that went by after pressing button2
     uint32_t button3PressTime = 0; //uint to save time that went by after pressing button3
