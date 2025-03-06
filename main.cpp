@@ -292,7 +292,7 @@ public:
             if (stopButton.isPressed()) {
                 stop();
                 printf("Movement interrupted by button press!\n");
-                saveDirectionToEEPROM();
+                saveDirectionToEEPROM();//save dir to eeprom
                 return; // Poistutaan funktiosta
             }
         }
@@ -306,7 +306,7 @@ public:
             printf("Door closed!\n");
         }
         steps_moved = 0;
-        saveDirectionToEEPROM();
+        saveDirectionToEEPROM();//save dir to eeprom
     }
 
     void move_back() {
@@ -322,7 +322,7 @@ public:
             state = DoorState::CLOSED;
             direction = false;
         }
-        saveDirectionToEEPROM();
+        saveDirectionToEEPROM(); //save dir to eeprom
     }
 
     DoorState getState() const {
@@ -391,7 +391,7 @@ public:
         total_steps = step_count; // miinustetaan jotta ei osu seinään uudestaan
         calibrated = true;
         std::cout << "Total steps: " << total_steps << std::endl;
-        saveToEEPROM();
+        saveToEEPROM(); //save the data to EEPROM
     }
 
     void saveToEEPROM() { //save motor's dir, calib and total steps to EEPROM
