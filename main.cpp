@@ -34,6 +34,83 @@
 #define SCL_PIN 17
 
 
+class RotaryEncoder {
+private:
+    uint8_t pinA, pinB; // pins
+    int position;  // seurataan encoderin asentoa
+    bool lastA;  // viimeisin signaali
+
+    static RotaryEncoder* instance;  // Yksi instanssi keskeytyksen käsittelyä varten
+
+    static void gpio_irq_handler(uint gpio, uint32_t events) {
+        if (instance) {
+            instance->update();
+        }
+    }
+
+public:
+    RotaryEncoder(uint8_t pinA, uint8_t pinB)
+        : pinA(pinA), pinB(pinB), position(0), lastA(false) {
+        initialize();
+    }
+
+    void initialize() {
+        gpio_init(pinA);
+        gpio_init(pinB);
+        gpio_set_dir(pinA, GPIO_IN);
+        gpio_set_dir(pinB, GPIO_IN);
+        gpio_pull_up(pinA);
+        gpio_pull_up(pinB);
+
+        lastA = gpio_get(pinA);  // Alustetaan viimeisin A-signaalin tila
+
+        instance = this;
+        gpio_set_irq_enabled_with_callback(pinA, GPIO_IRQ_EDGE_RISE , true, &gpio_irq_handler);
+    }
+
+
+    void update() {
+        bool aState = gpio_get(pinA);
+        bool bState = gpio_get(pinB);
+
+        if (aState != lastA) {  // **Tunnistetaan nousureuna A:ssa**
+            if (bState == aState) {
+                position++;  //  **Myötäpäivään**
+            } else {
+                position--;  //  **Vastapäivään**
+            }
+            printf("[ENCODER] Position updated: %d\n", position);
+        }
+        lastA = aState;
+    }
+
+    int getPosition() const {
+        return position;
+    }
+
+    void reset() {
+        position = 0;
+    }
+
+    bool status_check(int &stable_steps) {
+        static int last_position = position;
+
+        if (position == last_position) {
+            stable_steps++;  // Jos ei liikettä, lisätään laskuriin
+        } else {
+            stable_steps = 0; // Jos liike havaitaan, nollataan laskuri
+        }
+
+        last_position = position;  // Päivitetään viimeisin sijainti
+
+        return stable_steps > 8000;  // Palauttaa **true**, jos moottori on jumissa
+    }
+
+};
+
+// Alustetaan instanssi osoitin (tarvitaan keskeytyksen käsittelyyn)
+RotaryEncoder* RotaryEncoder::instance = nullptr;
+
 class EEPROM {
 public:
     EEPROM(){ initialize(); }
@@ -98,6 +175,18 @@ public:
 
         printf("EEPROM Read: Data successfully read from 0x%X\n", mem_address);
         return true;
+    }
+
+
+    void clear() {
+        uint8_t zero = 0;
+        int32_t zero_steps = 0;
+
+        EEPROM::write(EEPROM_DIRECTION_ADDR, &zero, sizeof(zero));  // Poistetaan suunta
+        EEPROM::write(EEPROM_STEPS_ADDR, (uint8_t*)&zero_steps, sizeof(zero_steps));  // Nollataan askeleet
+        EEPROM::write(EEPROM_CALIBRATION_ADDR, &zero, sizeof(zero));  // Nollataan kalibrointitila
+
+        printf("EEPROM cleared!\n");
     }
 
 
@@ -338,27 +427,35 @@ public:
         gpio_put(in4, step_sequence[position][3]);
     }
 
-    void calibrate(int delay_ms, LimitSwitch &switch1, LimitSwitch &switch2) {
+    void calibrate(int delay_ms, LimitSwitch &switch1, LimitSwitch &switch2, RotaryEncoder &encoder) {
         int step_count = 0;
         total_steps = 0;
         steps_moved = 0;
+        encoder.reset(); // nollataan asento
         LimitSwitch *first_triggered = nullptr;
+
+        int stable_steps = 0;
+
 
 
         // Nollataan kytkimet ennen kalibroinnin aloitusta
         switch1.resetTrigger();
         switch2.resetTrigger();
 
-        direction = loadDirectionFromEEPROM(); //flip direction so it doesn't hit the wall
-
-        switch1.resetTrigger();
-        switch2.resetTrigger();
 
         // Ensimmäinen reun
-
         while (true) {
             step(direction);
             sleep_ms(delay_ms);
+            printf("Encoder Position: %d\n", encoder.getPosition());
+
+            if (encoder.status_check(stable_steps)) {  //  Moottori on jumissa (500 askelta ilman liikettä)
+                printf("Warning: Motor hit the wall! Reversing direction...\n");
+                direction = !direction;  // Vaihda suunta
+                stable_steps = 0;
+                continue;  // Yritetään uudelleen vastakkaiseen suuntaan
+            }
+
 
             if (switch1.isTriggered()) {
                 first_triggered = &switch1; // Tallennetaan kumpi kytkin aktivoitui
@@ -374,6 +471,7 @@ public:
 
         // Käännetään suuntaa ja siirrytään toiseen reunaan
         direction = !direction;
+        stable_steps = 0;
 
         while (true) {
             // seurataan vain toista kytkintä
@@ -381,9 +479,15 @@ public:
             step_count++;
             sleep_ms(delay_ms);
 
+            if (encoder.status_check(stable_steps)) {
+                printf("Warning: Motor hit the wall! Reversing direction again...\n");
+                direction = !direction;
+                stable_steps = 0;
+                continue;
+            }
+
             if ((first_triggered == &switch1 && switch2.isTriggered()) || (
                     first_triggered == &switch2 && switch1.isTriggered())) {
-                // step_count -= 200;
                 break;
             }
         }
@@ -495,6 +599,7 @@ public:
 int main() {
     stdio_init_all();
     StepperMotor motor(IN1, IN2, IN3, IN4);
+    RotaryEncoder encoder(27, 28);
     Button button1(8); //sw1
     Button button2(9); // sw0
     Button button3(7); // sw2
@@ -506,8 +611,9 @@ int main() {
 
     printf("\nBoot\n");
 
+    printf("Encoder Position: %d\n", encoder.getPosition());
     // Load calibration data from EEPROM
-    motor.loadFromEEPROM();
+
 
     if (motor.isCalibrated()) {
         printf("Motor is calibrated. ");
@@ -531,7 +637,7 @@ int main() {
         // Check if both buttons were pressed within 500ms of each other
         if (button2PressTime > 0 && button3PressTime > 0 && abs((int)(button2PressTime - button3PressTime)) <= 500) {
 
-            motor.calibrate(1, limitSwitch1, limitSwitch2); //calibrate motor
+            motor.calibrate(1, limitSwitch1, limitSwitch2, encoder); //calibrate motor
             std::cout << "Motor calibrated\n" << std::endl;
 
             //reset timestamps
