@@ -34,23 +34,19 @@
 #define SCL_PIN 17
 
 
+void gpio_irq_handler(uint gpio, uint32_t event_mask);
+
 class RotaryEncoder {
-private:
-    uint8_t pinA, pinB; // pins
-    int position;  // seurataan encoderin asentoa
-    bool lastA;  // viimeisin signaali
+    public:
+    static RotaryEncoder* instance;
+    uint8_t pinA, pinB;
+    int position;
+    bool lastA;
+    int last_positon;
+    int stable_steps;
 
-    static RotaryEncoder* instance;  // Yksi instanssi keskeytyksen käsittelyä varten
-
-    static void gpio_irq_handler(uint gpio, uint32_t events) {
-        if (instance) {
-            instance->update();
-        }
-    }
-
-public:
-    RotaryEncoder(uint8_t pinA, uint8_t pinB)
-        : pinA(pinA), pinB(pinB), position(0), lastA(false) {
+    RotaryEncoder(uint8_t pinA, uint8_t pinB) : pinA(pinA), pinB(pinB), position(0), lastA(false) {
+        instance = this;
         initialize();
     }
 
@@ -59,56 +55,51 @@ public:
         gpio_init(pinB);
         gpio_set_dir(pinA, GPIO_IN);
         gpio_set_dir(pinB, GPIO_IN);
-        gpio_pull_up(pinA);
-        gpio_pull_up(pinB);
 
-        lastA = gpio_get(pinA);  // Alustetaan viimeisin A-signaalin tila
 
-        instance = this;
-        gpio_set_irq_enabled_with_callback(pinA, GPIO_IRQ_EDGE_RISE , true, &gpio_irq_handler);
+        gpio_set_irq_enabled_with_callback(pinA, GPIO_IRQ_EDGE_RISE, true, &gpio_irq_handler);
+
     }
-
 
     void update() {
         bool aState = gpio_get(pinA);
         bool bState = gpio_get(pinB);
 
-        if (aState != lastA) {  // **Tunnistetaan nousureuna A:ssa**
-            if (bState == aState) {
-                position++;  //  **Myötäpäivään**
-            } else {
-                position--;  //  **Vastapäivään**
-            }
-            printf("[ENCODER] Position updated: %d\n", position);
-        }
-        lastA = aState;
-    }
-
-    int getPosition() const {
-        return position;
-    }
-
-    void reset() {
-        position = 0;
-    }
-
-    bool status_check(int &stable_steps) {
-        static int last_position = position;
-
-        if (position == last_position) {
-            stable_steps++;  // Jos ei liikettä, lisätään laskuriin
+        if (bState == 0) {
+            position++;  // Myötäpäivään
         } else {
-            stable_steps = 0; // Jos liike havaitaan, nollataan laskuri
+            position--;  // Vastapäivään
+        }
+    }
+
+
+
+        bool check_status( ) {
+
+        if (position == last_positon) {
+            stable_steps++;  // Jos ei muutosta, lisätään stable_steps
+        } else {
+            stable_steps = 0;  // Jos liike havaittu, nollataan laskuri
+            last_positon = position;  // Päivitetään viimeisin asento
         }
 
-        last_position = position;  // Päivitetään viimeisin sijainti
-
-        return stable_steps > 8000;  // Palauttaa **true**, jos moottori on jumissa
+        if (stable_steps >= 1000) {
+            std::cout<< "ERROR: Motor stuck"<< std::endl;
+            stable_steps = 0;  // Nollataan virheen jälkeen
+            return true;
+        }
+        return false;
     }
+
+    void reset()
+    {
+        stable_steps = 0;
+        position = 0;
+        last_positon = 0;
+    }
+
 
 };
-
-// Alustetaan instanssi osoitin (tarvitaan keskeytyksen käsittelyyn)
 RotaryEncoder* RotaryEncoder::instance = nullptr;
 
 class EEPROM {
@@ -225,57 +216,55 @@ public:
     }
 };
 
+
 class LimitSwitch {
-private:
-    uint8_t pin;
-    bool triggered = false;
-    static LimitSwitch *instance1;
-    static LimitSwitch *instance2;
-
-    static void gpio_irq_handler(uint gpio, uint32_t events) {
-        busy_wait_ms(100);
-
-        if (instance1 && gpio == instance1->pin) {
-            // varmistetaan onko nullptr ja gpio pin
-            instance1->triggered = true;
-            printf("Limit switch 1 (pin %d) triggered!\n", gpio);
-        }
-        if (instance2 && gpio == instance2->pin) {
-            instance2->triggered = true;
-            printf("Limit switch 2 (pin %d) triggered!\n", gpio);
-        }
-    }
-
 public:
-    LimitSwitch(uint8_t pin) : pin(pin) { initialize(); }
+    static LimitSwitch *instance1, *instance2;
+    uint8_t pin;
+    bool triggered;
+
+    LimitSwitch(uint8_t pin) : pin(pin), triggered(false) {
+        if (!instance1) instance1 = this;
+        else if (!instance2) instance2 = this;
+        initialize();
+    }
 
     void initialize() {
         gpio_init(pin);
         gpio_set_dir(pin, GPIO_IN);
         gpio_pull_up(pin);
-
-
-        if (!instance1) {
-            instance1 = this;
-        } else if (!instance2) {
-            instance2 = this;
-        }
-
-        gpio_set_irq_enabled_with_callback(pin, GPIO_IRQ_EDGE_FALL, true, &gpio_irq_handler);
-    }
-
-
-    bool isTriggered() {
-        return triggered;
+        gpio_set_irq_enabled(pin, GPIO_IRQ_EDGE_FALL, true);
     }
 
     void resetTrigger() {
         triggered = false;
     }
+
+    bool isTriggered() {
+        return triggered;
+    }
 };
 
-LimitSwitch *LimitSwitch::instance1 = nullptr; // asetetaan nullptr
+
+LimitSwitch *LimitSwitch::instance1 = nullptr;
 LimitSwitch *LimitSwitch::instance2 = nullptr;
+
+
+//irq handleri jossa käsitellään tapahtuman tyyppi ja toimitaan sen perusteella. tämä pakollista sillä mahdollista vain yksi callback
+ void gpio_irq_handler(uint gpio, uint32_t events) { //
+
+   if (gpio == RotaryEncoder::instance->pinA || gpio == RotaryEncoder::instance->pinB)  {
+        RotaryEncoder::instance->update();
+    }
+    if (LimitSwitch::instance1 && gpio == LimitSwitch::instance1->pin) {
+        LimitSwitch::instance1->triggered = true;
+        printf("Limit switch 1 (pin %d) triggered!\n", gpio);
+    }
+    if (LimitSwitch::instance2 && gpio == LimitSwitch::instance2->pin) {
+        LimitSwitch::instance2->triggered = true;
+        printf("Limit switch 2 (pin %d) triggered!\n", gpio);
+    }
+}
 
 
 enum class DoorState { CLOSED, OPEN, STOPPED, OPENING, CLOSING };
@@ -431,10 +420,9 @@ public:
         int step_count = 0;
         total_steps = 0;
         steps_moved = 0;
-        encoder.reset(); // nollataan asento
         LimitSwitch *first_triggered = nullptr;
 
-        int stable_steps = 0;
+        encoder.reset(); // nollataan asento
 
 
 
@@ -447,15 +435,6 @@ public:
         while (true) {
             step(direction);
             sleep_ms(delay_ms);
-            printf("Encoder Position: %d\n", encoder.getPosition());
-
-            if (encoder.status_check(stable_steps)) {  //  Moottori on jumissa (500 askelta ilman liikettä)
-                printf("Warning: Motor hit the wall! Reversing direction...\n");
-                direction = !direction;  // Vaihda suunta
-                stable_steps = 0;
-                continue;  // Yritetään uudelleen vastakkaiseen suuntaan
-            }
-
 
             if (switch1.isTriggered()) {
                 first_triggered = &switch1; // Tallennetaan kumpi kytkin aktivoitui
@@ -464,6 +443,17 @@ public:
                 first_triggered = &switch2;
                 break;
             }
+
+
+
+            if (encoder.check_status())
+            {
+                direction = !direction;
+               std::cout<< "Changing direction"<< std::endl;
+            }
+
+
+
         }
         // Varmistetaan, että limit-kytkin ei ole enää painettuna
         switch1.resetTrigger();
@@ -471,7 +461,7 @@ public:
 
         // Käännetään suuntaa ja siirrytään toiseen reunaan
         direction = !direction;
-        stable_steps = 0;
+
 
         while (true) {
             // seurataan vain toista kytkintä
@@ -479,17 +469,16 @@ public:
             step_count++;
             sleep_ms(delay_ms);
 
-            if (encoder.status_check(stable_steps)) {
-                printf("Warning: Motor hit the wall! Reversing direction again...\n");
-                direction = !direction;
-                stable_steps = 0;
-                continue;
-            }
-
             if ((first_triggered == &switch1 && switch2.isTriggered()) || (
                     first_triggered == &switch2 && switch1.isTriggered())) {
                 break;
             }
+            if (encoder.check_status())
+            {
+                return;
+            }
+
+
         }
         // Tallennetaan askelmäärä
         total_steps = step_count; // miinustetaan jotta ei osu seinään uudestaan
@@ -611,10 +600,7 @@ int main() {
 
     printf("\nBoot\n");
 
-    printf("Encoder Position: %d\n", encoder.getPosition());
     // Load calibration data from EEPROM
-
-
     if (motor.isCalibrated()) {
         printf("Motor is calibrated. ");
     } else {
