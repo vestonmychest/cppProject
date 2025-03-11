@@ -469,11 +469,10 @@ public:
         LimitSwitch *first_triggered = nullptr;
         encoder.reset(); // nollataan asento
 
-
-
         // Nollataan kytkimet ennen kalibroinnin aloitusta
         switch1.resetTrigger();
         switch2.resetTrigger();
+        led.off();
 
         std::cout<< "Starting calibration" << std::endl;
 
@@ -529,9 +528,10 @@ public:
         // Tallennetaan askelmäärä
         total_steps = step_count; // miinustetaan jotta ei osu seinään uudestaan
         calibrated = true;
+        state = DoorState::CLOSED;  // oletus tila
         std::cout << "Motor calibrated " <<  std::endl;
         saveToEEPROM(); //save the data to EEPROM
-        led.off();
+
     }
 
     void saveToEEPROM() { //save motor's dir, calib and total steps to EEPROM
