@@ -35,6 +35,36 @@
 
 
 void gpio_irq_handler(uint gpio, uint32_t event_mask);
+class Led
+{
+private:
+    uint8_t pin;
+    bool blinking = false;
+    absolute_time_t last_toggle_time;
+    uint32_t blink_interval = 1000; // Vilkkumisväli millisekunteina
+
+public:
+    Led(uint8_t pin) : pin(pin) { initialise(); }
+
+    void initialise() {
+        gpio_init(pin);
+        gpio_set_dir(pin, GPIO_OUT);
+        gpio_put(pin, 0);
+    }
+
+    void on() {
+        blinking = false;
+        gpio_put(pin, 1);
+    }
+
+    void off() {
+        blinking = false;
+        gpio_put(pin, 0);
+    }
+
+
+};
+
 
 class RotaryEncoder {
     public:
@@ -71,8 +101,6 @@ class RotaryEncoder {
             position--;  // Vastapäivään
         }
     }
-
-
 
         bool check_status( ) {
 
@@ -267,7 +295,7 @@ LimitSwitch *LimitSwitch::instance2 = nullptr;
 }
 
 
-enum class DoorState { CLOSED, OPEN, STOPPED, OPENING, CLOSING };
+enum class DoorState { CLOSED, OPEN, STOPPED, OPENING, CLOSING, STUCK };
 
 
 class StepperMotor {
@@ -338,7 +366,7 @@ public:
         if (state == DoorState::CLOSED || state == DoorState::STOPPED) {
             previous_state = state;
             state = DoorState::OPENING;
-            direction = true;
+            direction = !direction; // kulku suunnan vaihto
             printf("Door starting to open...\n");
         }
     }
@@ -347,7 +375,7 @@ public:
         if (state == DoorState::OPEN || state == DoorState::STOPPED) {
             previous_state = state;
             state = DoorState::CLOSING;
-            direction = false;
+            direction = !direction; // vaihdetaan suunta
             printf("Door starting to close...\n");
         }
     }
@@ -360,21 +388,31 @@ public:
         }
     }
 
-    void move(Button &stopButton){
-        for (int i = 0; i < total_steps; i++) {
+    void move(Button &stopButton, RotaryEncoder &encoder){
+        int steps_taken = 0;
+
+        while (steps_taken < total_steps)
+        {
             step(direction);
-            sleep_ms(1);
-            steps_moved++; // Lasketaan liikutut askeleet
+            sleep_ms(1); //
+            steps_moved++;
+            steps_taken++;
 
             // Jos nappia painetaan, pysäytetään moottori
             if (stopButton.isPressed()) {
                 stop();
                 printf("Movement interrupted by button press!\n");
-                saveDirectionToEEPROM();//save dir to eeprom
-                return; // Poistutaan funktiosta
+                saveDirectionToEEPROM();
+                return;
+            }
+
+            // Tarkistetaan, onko moottori juumissa
+            if (encoder.check_status()) {
+                state = DoorState::STUCK;
+                std::cout << "Motor stuck! Please calibrate again." << std::endl;
+               return;
             }
         }
-
         // Jos liike on valmis, päivitetään tila
         if (state == DoorState::OPENING) {
             state = DoorState::OPEN;
@@ -387,10 +425,18 @@ public:
         saveDirectionToEEPROM();//save dir to eeprom
     }
 
-    void move_back() {
-        for (int i = 0; i < steps_moved; i++) {
+    void move_back(RotaryEncoder &encoder) {
+        for (int i = 0; i < steps_moved; i++)
+        {
             step(!direction);
             sleep_ms(1);
+
+            if (encoder.check_status())
+            {
+                state = DoorState::STUCK;
+                std::cout<< "Motor stuck please calibrate again" << std::endl;
+                break;
+            }
         }
         steps_moved = 0;
         if (previous_state == DoorState::CLOSING) {
@@ -416,12 +462,11 @@ public:
         gpio_put(in4, step_sequence[position][3]);
     }
 
-    void calibrate(int delay_ms, LimitSwitch &switch1, LimitSwitch &switch2, RotaryEncoder &encoder) {
+    void calibrate(int delay_ms, LimitSwitch &switch1, LimitSwitch &switch2, RotaryEncoder &encoder, Led &led) {
         int step_count = 0;
         total_steps = 0;
         steps_moved = 0;
         LimitSwitch *first_triggered = nullptr;
-
         encoder.reset(); // nollataan asento
 
 
@@ -430,6 +475,7 @@ public:
         switch1.resetTrigger();
         switch2.resetTrigger();
 
+        std::cout<< "Starting calibration" << std::endl;
 
         // Ensimmäinen reun
         while (true) {
@@ -443,9 +489,6 @@ public:
                 first_triggered = &switch2;
                 break;
             }
-
-
-
             if (encoder.check_status())
             {
                 direction = !direction;
@@ -475,6 +518,9 @@ public:
             }
             if (encoder.check_status())
             {
+                calibrated = false;
+                std::cout<< "Could not calibrate"  << std::endl;
+                led.on();
                 return;
             }
 
@@ -483,8 +529,9 @@ public:
         // Tallennetaan askelmäärä
         total_steps = step_count; // miinustetaan jotta ei osu seinään uudestaan
         calibrated = true;
-        std::cout << "Total steps: " << total_steps << std::endl;
+        std::cout << "Motor calibrated " <<  std::endl;
         saveToEEPROM(); //save the data to EEPROM
+        led.off();
     }
 
     void saveToEEPROM() { //save motor's dir, calib and total steps to EEPROM
@@ -585,7 +632,8 @@ public:
 };
 
 
-int main() {
+int main()
+{
     stdio_init_all();
     StepperMotor motor(IN1, IN2, IN3, IN4);
     RotaryEncoder encoder(27, 28);
@@ -594,11 +642,13 @@ int main() {
     Button button3(7); // sw2
     LimitSwitch limitSwitch1(4);
     LimitSwitch limitSwitch2(5);
+    Led led1(20);
     EEPROM eeprom;
     eeprom.initialize();
 
 
     printf("\nBoot\n");
+
 
     // Load calibration data from EEPROM
     if (motor.isCalibrated()) {
@@ -610,7 +660,8 @@ int main() {
     uint32_t button2PressTime = 0; //uint to save time that went by after pressing button2
     uint32_t button3PressTime = 0; //uint to save time that went by after pressing button3
 
-    while (true) {
+    while (true)
+    {
         if (button2.isPressed()) { //check if button2 is pressed
             button2PressTime = to_ms_since_boot(get_absolute_time()); //if button2 is pressed then save the time
         }                                                               // that has gone AFTER release of the button2
@@ -622,32 +673,49 @@ int main() {
 
         // Check if both buttons were pressed within 500ms of each other
         if (button2PressTime > 0 && button3PressTime > 0 && abs((int)(button2PressTime - button3PressTime)) <= 500) {
+            eeprom.clear();
+            motor.calibrate(1, limitSwitch1, limitSwitch2, encoder, led1);//calibrate motor
 
-            motor.calibrate(1, limitSwitch1, limitSwitch2, encoder); //calibrate motor
-            std::cout << "Motor calibrated\n" << std::endl;
 
             //reset timestamps
             button2PressTime = 0;
             button3PressTime = 0;
         }
 
-        if (button1.isPressed() && motor.calibrated) { //move the door only if the motor
-            DoorState currentState = motor.getState(); // has been calibrated
-            if (currentState == DoorState::CLOSED) {
-                motor.startOpening();
-            } else if (currentState == DoorState::OPEN) {
-                motor.startClosing();
-            } else if (currentState == DoorState::OPENING || currentState == DoorState::CLOSING) {
-                motor.stop(); // Pysäytä moottori jos se liikkuu
-            } else if (currentState == DoorState::STOPPED) {
-                motor.move_back();
-            }
-
-
-            // Jos moottori on liikkeessä, liikutetaan sitä askel kerrallaan
-            if (motor.getState() == DoorState::OPENING || motor.getState() == DoorState::CLOSING) {
-                motor.move(button1);
+        if (motor.calibrated) {
+            switch (motor.getState()) {
+            case DoorState::CLOSED:
+                if (button1.isPressed()) {
+                    motor.startOpening();
+                }
+                break;
+            case DoorState::OPEN:
+                if (button1.isPressed()) {
+                    motor.startClosing();
+                }
+                break;
+            case DoorState::OPENING:
+            case DoorState::CLOSING:
+                // Jos nappia painetaan, pysäytetään moottori, muuten siirretään askel kerrallaan.
+                if (button1.isPressed()) {
+                    motor.stop();
+                } else {
+                    motor.move(button1, encoder);
+                }
+                break;
+            case DoorState::STOPPED:
+                if (button1.isPressed()) {
+                    motor.move_back(encoder);
+                }
+                break;
+            case DoorState::STUCK:
+                    motor.stop();
+                    led1.on();
+                motor.calibrated = false;
+                break;
+            default:
+                break;
             }
         }
     }
-}
+};
