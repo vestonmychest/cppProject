@@ -308,8 +308,7 @@ class StepperMotor {
 private:
     uint8_t in1, in2, in3, in4;
     int position = 0;
-    DoorState state = DoorState::CLOSED; // oletus tila
-    DoorState previous_state = DoorState::CLOSED;
+
     int total_steps = 0;
     int steps_moved = 0;
     bool direction = true;
@@ -320,6 +319,10 @@ private:
     };
 
 public:
+    DoorState state = DoorState::CLOSED; // oletus tila
+    DoorState previous_state = DoorState::CLOSED;
+
+
     StepperMotor(uint8_t in1, uint8_t in2, uint8_t in3, uint8_t in4)
         : in1(in1), in2(in2), in3(in3), in4(in4) {
         initialize();
@@ -767,13 +770,12 @@ int main()
     motor.loadDoorStateFromEEPROM();
     motor.loadPreviousStateFromEEPROM();
 
-
-
-    if (motor.isCalibrated()) {
-        printf("Motor is calibrated. ");
-    } else {
-        printf("Motor is not calibrated. Please calibrate.\n");
+    if(motor.state == DoorState::CLOSING || motor.state== DoorState::OPENING )
+    {
+        motor.calibrated = false;
+        std ::cout << "Motor was stopped during movement. Please calibrate the motor again" << std::endl;
     }
+
 
     uint32_t button2PressTime = 0; //uint to save time that went by after pressing button2
     uint32_t button3PressTime = 0; //uint to save time that went by after pressing button3
@@ -787,11 +789,9 @@ int main()
         if (button3.isPressed()) { //check if button3 is pressed
             button3PressTime = to_ms_since_boot(get_absolute_time()); //if button3 is pressed then save the time
         }                                                               // that has gone AFTER release of the button3
-
-
         // Check if both buttons were pressed within 500ms of each other
         if (button2PressTime > 0 && button3PressTime > 0 && abs((int)(button2PressTime - button3PressTime)) <= 500) {
-            eeprom.clear();
+            eeprom.clear(); // tyhjennetään eeprom
             motor.calibrate(1, limitSwitch1, limitSwitch2, encoder, led1);//calibrate motor
 
 
@@ -814,7 +814,7 @@ int main()
                 break;
             case DoorState::OPENING:
             case DoorState::CLOSING:
-                // Jos nappia painetaan, pysäytetään moottori, muuten siirretään askel kerrallaan.
+                // Jos nappia painetaan, pysäytetään moottori, muuten annetaan liikkua
                 if (button1.isPressed()) {
                     motor.stop();
                 } else {
