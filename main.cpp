@@ -805,13 +805,17 @@ int main() {
 
         if (button2.isPressed()) {
             //check if button2 is pressed
-            button2PressTime = to_ms_since_boot(get_absolute_time()); //if button2 is pressed then save the time
-        } // that has gone AFTER release of the button2
+            //if button2 is pressed then save the time
+            // that has gone AFTER release of the button2
+            button2PressTime = to_ms_since_boot(get_absolute_time());
+        }
 
         if (button3.isPressed()) {
             //check if button3 is pressed
-            button3PressTime = to_ms_since_boot(get_absolute_time()); //if button3 is pressed then save the time
-        } // that has gone AFTER release of the button3
+            //if button3 is pressed then save the time
+            // that has gone AFTER release of the button3
+            button3PressTime = to_ms_since_boot(get_absolute_time());
+        }
 
 
         // Check if both buttons were pressed within 500ms of each other
