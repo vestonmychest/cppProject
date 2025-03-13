@@ -30,6 +30,7 @@
 #define EEPROM_CALIBRATION_ADDR 0x7FF8 // 1-byte; 1 = calibrated; 0 = not calibrated
 #define EEPROM_DOOR_STATE_ADDR 0x7FF9 //1 byte; 6 door states
 #define EEPROM_STEPS_MOVED_ADDR 0x7FFC //4-byte; steps_moved is 4 byte int
+#define EEPROM_PREVIOUS_STATE_ADDR 0x7FFE //1 byte; 6 door states
 //I2C pins
 #define I2C_PORT i2c0
 #define SDA_PIN 16
@@ -201,11 +202,13 @@ public:
 
     void clear() {
         uint8_t zero = 0;
-        int32_t zero_steps = 0;
+        int32_t zero_steps, zero_steps_moved = 0;
 
         EEPROM::write(EEPROM_DIRECTION_ADDR, &zero, sizeof(zero));  // Poistetaan suunta
         EEPROM::write(EEPROM_STEPS_ADDR, (uint8_t*)&zero_steps, sizeof(zero_steps));  // Nollataan askeleet
         EEPROM::write(EEPROM_CALIBRATION_ADDR, &zero, sizeof(zero));  // Nollataan kalibrointitila
+        EEPROM::write(EEPROM_DOOR_STATE_ADDR, &zero, sizeof(zero)); //clear door state
+        EEPROM::write(EEPROM_STEPS_MOVED_ADDR, &zero, sizeof(zero_steps_moved)); //clear steps moved
 
         printf("EEPROM cleared!\n");
     }
@@ -334,6 +337,17 @@ public:
         gpio_set_dir(in4, GPIO_OUT);
     }
 
+    void saveStepsMovedToEEPROM() { //save steps moved
+        // Write steps moved to EEPROM
+        bool write_success = EEPROM::write(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&steps_moved, sizeof(steps_moved));
+
+        if (write_success) {
+            printf("Successfully saved steps moved %d to EEPROM address 0x%04X\n", steps_moved, EEPROM_STEPS_MOVED_ADDR);
+        } else {
+            printf("Failed to save steps moved %d to EEPROM address 0x%04X\n", steps_moved, EEPROM_STEPS_MOVED_ADDR);
+        }
+    }
+
     void saveDirectionToEEPROM() { //save direction
         // Write direction to EEPROM
         bool write_success = EEPROM::write(EEPROM_DIRECTION_ADDR, (uint8_t*)&direction, sizeof(direction));
@@ -354,6 +368,26 @@ public:
         }
     }
 
+    void savePreviousDoorStateToEEPROM() {
+        uint8_t previous_state_value = static_cast<uint8_t>(previous_state); // Convert enum to byte
+        if (EEPROM::write(EEPROM_PREVIOUS_STATE_ADDR, &previous_state_value, sizeof(previous_state_value))) {
+            printf("Previous DoorState saved: %d\n", previous_state_value);
+        } else {
+            printf("Failed to save Previous DoorState: %d to EEPROM!\n", previous_state_value);
+        }
+    }
+
+    void loadStepsMovedFromEEPROM() {
+        int read_steps_moved;
+        if (EEPROM::read(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&read_steps_moved, sizeof(read_steps_moved))) {
+            printf("Steps Moved loaded: %d\n", read_steps_moved);
+            steps_moved = read_steps_moved;
+            return;
+        }
+        steps_moved = 0;
+        printf("Invalid steps moved in EEPROM, defaulting to %d\n", steps_moved);
+    }
+
     void loadDoorStateFromEEPROM() {
         uint8_t state_value;
         if (EEPROM::read(EEPROM_DOOR_STATE_ADDR, &state_value, sizeof(state_value))) {
@@ -365,6 +399,19 @@ public:
         }
         printf("Invalid DoorState in EEPROM, defaulting to CLOSED.\n");
         state = DoorState::CLOSED; // Default if EEPROM is corrupt
+    }
+
+    DoorState loadPreviousDoorStateFromEEPROM() {
+        uint8_t previous_state_value;
+        if (EEPROM::read(EEPROM_PREVIOUS_STATE_ADDR, &previous_state_value, sizeof(previous_state_value))) {
+            if (previous_state_value <= static_cast<uint8_t>(DoorState::STUCK)) { // Validate range
+                //previous_state = static_cast<DoorState>(previous_state_value);
+                printf("Previous DoorState loaded: %d\n", previous_state_value);
+                return static_cast<DoorState>(previous_state_value);
+            }
+        }
+        printf("Invalid Previous DoorState in EEPROM: %d, defaulting to CLOSED.\n", previous_state_value);
+        return DoorState::CLOSED; // Default if EEPROM is corrupt
     }
 
 
@@ -394,6 +441,7 @@ public:
             direction = !direction; // kulku suunnan vaihto
             printf("Door starting to open...\n");
             saveDoorStateToEEPROM();
+            savePreviousDoorStateToEEPROM();
         }
     }
 
@@ -404,6 +452,7 @@ public:
             direction = !direction; // vaihdetaan suunta
             printf("Door starting to close...\n");
             saveDoorStateToEEPROM();
+            savePreviousDoorStateToEEPROM();
         }
     }
 
@@ -413,6 +462,7 @@ public:
             state = DoorState::STOPPED;
             printf("Door stopped!\n");
             saveDoorStateToEEPROM();
+            savePreviousDoorStateToEEPROM();
         }
     }
 
@@ -430,7 +480,7 @@ public:
             if (stopButton.isPressed()) {
                 stop();
                 printf("Movement interrupted by button press!\n");
-                saveDoorStateToEEPROM();
+                saveStepsMovedToEEPROM();
                 return;
             }
 
@@ -451,11 +501,12 @@ public:
             printf("Door closed!\n");
         }
         steps_moved = 0;
-        saveDirectionToEEPROM();//save dir to eeprom
+        //saveDirectionToEEPROM();//save dir to eeprom
         saveDoorStateToEEPROM();
     }
 
     void move_back(RotaryEncoder &encoder) {
+        previous_state = loadPreviousDoorStateFromEEPROM();
         for (int i = 0; i < steps_moved; i++)
         {
             step(!direction);
@@ -477,8 +528,9 @@ public:
             state = DoorState::CLOSED;
             direction = false;
         }
-        saveDirectionToEEPROM(); //save dir to eeprom
+        //saveDirectionToEEPROM(); //save dir to eeprom
         saveDoorStateToEEPROM();
+        savePreviousDoorStateToEEPROM();
     }
 
     DoorState getState() const {
@@ -586,28 +638,28 @@ public:
         sleep_ms(10); // Add delay between writes
 
         //Write steps moved; calls write method
-        if (!EEPROM::write(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&steps_moved, sizeof(steps_moved))) {
-            printf("Failed to write steps moved to EEPROM!\n");
-        }
-        sleep_ms(10); // Add delay between writes
+        // if (!EEPROM::write(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&steps_moved, sizeof(steps_moved))) {
+        //     printf("Failed to write steps moved to EEPROM!\n");
+        // }
+        // sleep_ms(10); // Add delay between writes
 
         // Read back and verify; calls read method
         bool dir;
         int steps;
         bool calib;
-        int steps_moved;
+        // int steps_moved;
         EEPROM::read(EEPROM_DIRECTION_ADDR, (uint8_t*)&dir, sizeof(dir));
         EEPROM::read(EEPROM_STEPS_ADDR, (uint8_t*)&steps, sizeof(steps));
         EEPROM::read(EEPROM_CALIBRATION_ADDR, (uint8_t*)&calib, sizeof(calib));
-        EEPROM::read(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&steps_moved, sizeof(steps_moved));
+        // EEPROM::read(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&steps_moved, sizeof(steps_moved));
 
-        printf("\nSaved to EEPROM - Steps: %d, Direction: %d, Calibrated: %d, Steps Moved: %d\n", steps, dir, calib, steps_moved);
+        printf("\nSaved to EEPROM - Steps: %d, Direction: %d, Calibrated: %d\n", steps, dir, calib);
     }
 
     void loadFromEEPROM() { //load dir, calib, total steps and steps moved from EEPROM
         printf("Loading EEPROM from EEPROM...\n");
         bool success = true; // A boolean flag to track if read is OK
-        int read_steps, read_steps_moved; //store total steps and steps moved read from EEPROM
+        int read_steps; //read_steps_moved //store total steps and steps moved read from EEPROM
         bool read_dir, read_calib; //booleans to store dir and calib read from EEPROM
 
         //Reads the motor's direction from the EEPROM at address 0x7FF0
@@ -631,18 +683,18 @@ public:
         //Reads the steps moved from the EEPROM at address 0x7FFD
         //The data is stored in the read_calib variable
         //The success flag is updated to false if the read operation fails
-        success &= EEPROM::read(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&read_steps_moved, sizeof(read_steps_moved));
-        printf("Reading steps moved from EEPROM...\n");
+        //success &= EEPROM::read(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&read_steps_moved, sizeof(read_steps_moved));
+        //printf("Reading steps moved from EEPROM...\n");
 
-        printf("\nRaw EEPROM Data -> Steps: %d, Direction: %d, Calibrated: %d, Steps Moved: %d\n",
-               read_steps, read_dir, read_calib, read_steps_moved);
+        printf("\nRaw EEPROM Data -> Steps: %d, Direction: %d, Calibrated: %d\n",
+               read_steps, read_dir, read_calib);
 
         if (!success) { //check if any of the read operations failed; reset to default values if fail
             printf("EEPROM read failed! Resetting to defaults.\n");
             direction = true;
             total_steps = 0;
             calibrated = false;
-            steps_moved = 0;
+            // steps_moved = 0;
             return;
         }
 
@@ -670,17 +722,17 @@ public:
             direction = read_dir; //if valid, assign read_dir to direction
         }
 
-        // Validate amount of steps
-        if (read_steps_moved < 0 || read_steps_moved > 100000) { //validate steps moved
-            printf("Invalid EEPROM steps moved! Resetting.\n");
-            steps_moved = 0; //steps_moved to 0 if fail validation
-            calibrated = false; // not calibrated if fail validation
-        } else {
-            steps_moved = read_steps_moved; //If the data is valid, assign read_steps_moved to steps_moved
-        }
+        // Validate amount of steps moved
+        // if (read_steps_moved < 0 || read_steps_moved > 100000) { //validate steps moved
+        //     printf("Invalid EEPROM steps moved! Resetting.\n");
+        //     steps_moved = 0; //steps_moved to 0 if fail validation
+        //     calibrated = false; // not calibrated if fail validation
+        // } else {
+        //     steps_moved = read_steps_moved; //If the data is valid, assign read_steps_moved to steps_moved
+        // }
 
-        printf("Loaded from EEPROM -> Steps: %d, Direction: %d, Calibrated: %d, Steps Moved: %d\n",
-               total_steps, direction, calibrated, steps_moved);
+        printf("Loaded from EEPROM -> Steps: %d, Direction: %d, Calibrated: %d\n",
+               total_steps, direction, calibrated);
     }
 
     //getter function; returns the current calibration status of the stepper motor
@@ -708,7 +760,9 @@ int main()
 
     // Load calibration data from EEPROM
     motor.loadFromEEPROM();
+    motor.loadStepsMovedFromEEPROM();
     motor.loadDoorStateFromEEPROM();
+    motor.loadPreviousDoorStateFromEEPROM();
     if (motor.isCalibrated()) {
         printf("Motor is calibrated. ");
     } else {
