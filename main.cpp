@@ -28,6 +28,9 @@
 #define EEPROM_DIRECTION_ADDR  0x7FF0  // 1-byte;
 #define EEPROM_STEPS_ADDR      0x7FF4  // 4-byte; total_steps is 4 byte int
 #define EEPROM_CALIBRATION_ADDR 0x7FF8 // 1-byte; 1 = calibrated; 0 = not calibrated
+#define EEPROM_DOOR_STATE_ADDR 0x7FF9 //1 byte; 6 door states
+#define EEPROM_STEPS_MOVED_ADDR 0x7FFC //4-byte; steps_moved is 4 byte int
+#define EEPROM_PREVIOUS_STATE_ADDR 0x8000 //1 byte; 6 door states
 //I2C pins
 #define I2C_PORT i2c0
 #define SDA_PIN 16
@@ -199,11 +202,14 @@ public:
 
     void clear() {
         uint8_t zero = 0;
-        int32_t zero_steps = 0;
+        int32_t zero_steps, zero_steps_moved = 0;
 
         EEPROM::write(EEPROM_DIRECTION_ADDR, &zero, sizeof(zero));  // Poistetaan suunta
         EEPROM::write(EEPROM_STEPS_ADDR, (uint8_t*)&zero_steps, sizeof(zero_steps));  // Nollataan askeleet
         EEPROM::write(EEPROM_CALIBRATION_ADDR, &zero, sizeof(zero));  // Nollataan kalibrointitila
+        EEPROM::write(EEPROM_DOOR_STATE_ADDR, &zero, sizeof(zero)); //clear door state
+        EEPROM::write(EEPROM_STEPS_MOVED_ADDR, &zero, sizeof(zero_steps_moved)); //clear steps moved
+        EEPROM::write(EEPROM_PREVIOUS_STATE_ADDR, &zero, sizeof(zero));        // Nollataan edellinen tila
 
         printf("EEPROM cleared!\n");
     }
@@ -332,6 +338,17 @@ public:
         gpio_set_dir(in4, GPIO_OUT);
     }
 
+    void saveStepsMovedToEEPROM() { //save steps moved
+        // Write steps moved to EEPROM
+        bool write_success = EEPROM::write(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&steps_moved, sizeof(steps_moved));
+
+        if (write_success) {
+            printf("Successfully saved steps moved %d to EEPROM address 0x%04X\n", steps_moved, EEPROM_STEPS_MOVED_ADDR);
+        } else {
+            printf("Failed to save steps moved %d to EEPROM address 0x%04X\n", steps_moved, EEPROM_STEPS_MOVED_ADDR);
+        }
+    }
+
     void saveDirectionToEEPROM() { //save direction
         // Write direction to EEPROM
         bool write_success = EEPROM::write(EEPROM_DIRECTION_ADDR, (uint8_t*)&direction, sizeof(direction));
@@ -343,6 +360,60 @@ public:
         }
     }
 
+    void saveDoorStateToEEPROM() {
+        uint8_t state_value = static_cast<uint8_t>(state); // Convert enum to byte
+        if (EEPROM::write(EEPROM_DOOR_STATE_ADDR, &state_value, sizeof(state_value))) {
+            printf("DoorState saved: %d\n", state_value);
+        } else {
+            printf("Failed to save DoorState to EEPROM!\n");
+        }
+    }
+
+    void savePreviousDoorStateToEEPROM() {
+        uint8_t previous_state_value = static_cast<uint8_t>(previous_state); // Convert enum to byte
+        if (EEPROM::write(EEPROM_PREVIOUS_STATE_ADDR, &previous_state_value, sizeof(previous_state_value))) {
+            printf("Previous DoorState saved: %d\n", previous_state_value);
+        } else {
+            printf("Failed to save Previous DoorState: %d to EEPROM!\n", previous_state_value);
+        }
+    }
+
+    void loadStepsMovedFromEEPROM() {
+        int read_steps_moved;
+        if (EEPROM::read(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&read_steps_moved, sizeof(read_steps_moved))) {
+            printf("Steps Moved loaded: %d\n", read_steps_moved);
+            steps_moved = read_steps_moved;
+            return;
+        }
+        steps_moved = 0;
+        printf("Invalid steps moved in EEPROM, defaulting to %d\n", steps_moved);
+    }
+
+    void loadDoorStateFromEEPROM() {
+        uint8_t state_value;
+        if (EEPROM::read(EEPROM_DOOR_STATE_ADDR, &state_value, sizeof(state_value))) {
+            if (state_value <= static_cast<uint8_t>(DoorState::STUCK)) { // Validate range
+                state = static_cast<DoorState>(state_value);
+                printf("DoorState loaded: %d\n", state_value);
+                return;
+            }
+        }
+        printf("Invalid DoorState in EEPROM, defaulting to CLOSED.\n");
+        state = DoorState::CLOSED; // Default if EEPROM is corrupt
+    }
+
+    void loadPreviousStateFromEEPROM() {
+        uint8_t read_prev_state;
+        if (EEPROM::read(EEPROM_PREVIOUS_STATE_ADDR, &read_prev_state, sizeof(read_prev_state))) {
+            printf("Previous DoorState loaded: %d\n", read_prev_state);
+            previous_state = static_cast<DoorState>(read_prev_state);
+            return;
+        }
+        previous_state = DoorState::CLOSED;
+        printf("Invalid Previous DoorState in EEPROM, defaulting to CLOSED.\n");
+    }
+
+
     bool loadDirectionFromEEPROM() { //load only dir from EEPROM
         bool eeprom_direction; //boolean for dir
         //Reads the motor's direction from the EEPROM at address 0x7FF0
@@ -351,10 +422,9 @@ public:
         bool success = EEPROM::read(EEPROM_DIRECTION_ADDR, (uint8_t*)&eeprom_direction, sizeof(eeprom_direction));
 
         if (success) {
-            // If EEPROM contains valid data, flip the direction
-            direction = !eeprom_direction;
+            // If EEPROM contains valid data
+            direction = eeprom_direction;
             printf("Loaded direction from EEPROM: %d. Flipped to: %d\n", eeprom_direction, direction);
-            return direction;
         } else {
             // If EEPROM read fails, use the default direction
             printf("Failed to load direction from EEPROM. Using default direction: %d\n", direction);
@@ -368,6 +438,9 @@ public:
             state = DoorState::OPENING;
             direction = !direction; // kulku suunnan vaihto
             printf("Door starting to open...\n");
+            saveDoorStateToEEPROM();
+            savePreviousDoorStateToEEPROM();
+            saveDirectionToEEPROM();
         }
     }
 
@@ -377,6 +450,9 @@ public:
             state = DoorState::CLOSING;
             direction = !direction; // vaihdetaan suunta
             printf("Door starting to close...\n");
+            saveDoorStateToEEPROM();
+            savePreviousDoorStateToEEPROM();
+            saveDirectionToEEPROM();
         }
     }
 
@@ -384,7 +460,11 @@ public:
         if (state == DoorState::OPENING || state == DoorState::CLOSING) {
             previous_state = state;
             state = DoorState::STOPPED;
+            direction = !direction;
             printf("Door stopped!\n");
+            saveDoorStateToEEPROM();
+            savePreviousDoorStateToEEPROM();
+            saveDirectionToEEPROM();
         }
     }
 
@@ -402,7 +482,7 @@ public:
             if (stopButton.isPressed()) {
                 stop();
                 printf("Movement interrupted by button press!\n");
-                saveDirectionToEEPROM();
+                saveStepsMovedToEEPROM();
                 return;
             }
 
@@ -410,11 +490,13 @@ public:
             if (encoder.check_status()) {
                 state = DoorState::STUCK;
                 std::cout << "Motor stuck! Please calibrate again." << std::endl;
+                saveDoorStateToEEPROM();
                return;
             }
         }
         // Jos liike on valmis, päivitetään tila
         if (state == DoorState::OPENING) {
+
             state = DoorState::OPEN;
             printf("Door open!\n");
         } else if (state == DoorState::CLOSING) {
@@ -423,30 +505,38 @@ public:
         }
         steps_moved = 0;
         saveDirectionToEEPROM();//save dir to eeprom
+        saveDoorStateToEEPROM();
     }
 
     void move_back(RotaryEncoder &encoder) {
-        for (int i = 0; i < steps_moved; i++)
+        int steps = 0;
+
+        while (steps < steps_moved)
         {
-            step(!direction);
-            sleep_ms(1);
+            step(direction);
+            sleep_ms(1); //
+            steps++;
+
 
             if (encoder.check_status())
             {
                 state = DoorState::STUCK;
                 std::cout<< "Motor stuck please calibrate again" << std::endl;
+                saveDoorStateToEEPROM();
                 break;
             }
         }
-        steps_moved = 0;
+
         if (previous_state == DoorState::CLOSING) {
             state = DoorState::OPEN;
-            direction = true;
+            std::cout<< "Door open"<< std::endl;
         } else if (previous_state == DoorState::OPENING) {
             state = DoorState::CLOSED;
-            direction = false;
+            std::cout<< "Door closed"<< std::endl;
         }
+        steps_moved = 0;
         saveDirectionToEEPROM(); //save dir to eeprom
+        saveDoorStateToEEPROM();
     }
 
     DoorState getState() const {
@@ -534,7 +624,7 @@ public:
 
     }
 
-    void saveToEEPROM() { //save motor's dir, calib and total steps to EEPROM
+    void saveToEEPROM() { //save motor's dir, calib, total steps and steps moved to EEPROM
         // Write direction; calls write method
         if (!EEPROM::write(EEPROM_DIRECTION_ADDR, (uint8_t*)&direction, sizeof(direction))) {
             printf("Failed to write direction to EEPROM!\n");
@@ -553,21 +643,29 @@ public:
         }
         sleep_ms(10); // Add delay between writes
 
+        //Write steps moved; calls write method
+        // if (!EEPROM::write(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&steps_moved, sizeof(steps_moved))) {
+        //     printf("Failed to write steps moved to EEPROM!\n");
+        // }
+        // sleep_ms(10); // Add delay between writes
+
         // Read back and verify; calls read method
         bool dir;
         int steps;
         bool calib;
+        // int steps_moved;
         EEPROM::read(EEPROM_DIRECTION_ADDR, (uint8_t*)&dir, sizeof(dir));
         EEPROM::read(EEPROM_STEPS_ADDR, (uint8_t*)&steps, sizeof(steps));
         EEPROM::read(EEPROM_CALIBRATION_ADDR, (uint8_t*)&calib, sizeof(calib));
+        // EEPROM::read(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&steps_moved, sizeof(steps_moved));
 
         printf("\nSaved to EEPROM - Steps: %d, Direction: %d, Calibrated: %d\n", steps, dir, calib);
     }
 
-    void loadFromEEPROM() { //load dir, calib and total steps from EEPROM
+    void loadFromEEPROM() { //load dir, calib, total steps and steps moved from EEPROM
         printf("Loading EEPROM from EEPROM...\n");
         bool success = true; // A boolean flag to track if read is OK
-        int read_steps; //store total steps read from EEPROM
+        int read_steps; //read_steps_moved //store total steps and steps moved read from EEPROM
         bool read_dir, read_calib; //booleans to store dir and calib read from EEPROM
 
         //Reads the motor's direction from the EEPROM at address 0x7FF0
@@ -588,6 +686,12 @@ public:
         success &= EEPROM::read(EEPROM_CALIBRATION_ADDR, (uint8_t*)&read_calib, sizeof(read_calib));
         printf("Reading calibration from EEPROM...\n");
 
+        //Reads the steps moved from the EEPROM at address 0x7FFD
+        //The data is stored in the read_calib variable
+        //The success flag is updated to false if the read operation fails
+        //success &= EEPROM::read(EEPROM_STEPS_MOVED_ADDR, (uint8_t*)&read_steps_moved, sizeof(read_steps_moved));
+        //printf("Reading steps moved from EEPROM...\n");
+
         printf("\nRaw EEPROM Data -> Steps: %d, Direction: %d, Calibrated: %d\n",
                read_steps, read_dir, read_calib);
 
@@ -596,6 +700,7 @@ public:
             direction = true;
             total_steps = 0;
             calibrated = false;
+            // steps_moved = 0;
             return;
         }
 
@@ -623,6 +728,15 @@ public:
             direction = read_dir; //if valid, assign read_dir to direction
         }
 
+        // Validate amount of steps moved
+        // if (read_steps_moved < 0 || read_steps_moved > 100000) { //validate steps moved
+        //     printf("Invalid EEPROM steps moved! Resetting.\n");
+        //     steps_moved = 0; //steps_moved to 0 if fail validation
+        //     calibrated = false; // not calibrated if fail validation
+        // } else {
+        //     steps_moved = read_steps_moved; //If the data is valid, assign read_steps_moved to steps_moved
+        // }
+
         printf("Loaded from EEPROM -> Steps: %d, Direction: %d, Calibrated: %d\n",
                total_steps, direction, calibrated);
     }
@@ -648,9 +762,13 @@ int main()
 
 
     printf("\nBoot\n");
+    motor.loadFromEEPROM();
+    motor.loadStepsMovedFromEEPROM();
+    motor.loadDoorStateFromEEPROM();
+    motor.loadPreviousStateFromEEPROM();
 
 
-    // Load calibration data from EEPROM
+
     if (motor.isCalibrated()) {
         printf("Motor is calibrated. ");
     } else {
@@ -714,7 +832,8 @@ int main()
                 motor.calibrated = false;
                 break;
             default:
-                break;
+                DoorState::STOPPED;
+                    break;
             }
         }
     }
